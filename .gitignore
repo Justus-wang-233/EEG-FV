@@ -3,6 +3,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+mini_mat_wki/
+
 # C extensions
 *.so
 
@@ -137,3 +139,4 @@ PREDICTIONS.csv
 
 # VS Code Data
 .vscode/
+/mini_mat_wki/

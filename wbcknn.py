@@ -3,7 +3,7 @@ from collections import Counter
 
 
 class WBCkNN:
-    def __init__(self, k=3):
+    def __init__(self, k):
         self.k = k  # 设置k值，表示最近邻的数量
 
     def fit(self, X_train, y_train):

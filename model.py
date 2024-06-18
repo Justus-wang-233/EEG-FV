@@ -13,6 +13,7 @@ from wettbewerb import get_3montages
 from tensorflow.keras.models import load_model
 from scipy import signal as sig
 import ruptures as rpt
+import mne
 
 
 # 函数的签名（参数和返回值的数量）不能更改

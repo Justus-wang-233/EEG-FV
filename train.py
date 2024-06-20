@@ -39,10 +39,14 @@ def process_segment(segment, fs, segment_start_time, segment_end_time, seizure_p
     # 判断该段内是否有癫痫发作
     if seizure_present == 1 and seizure_start_time < segment_end_time and seizure_end_time > segment_start_time:
         label = 1
+        overlap_start_time = max(0, seizure_start_time - segment_start_time)
+        overlap_end_time = min(segment_end_time - segment_start_time, seizure_end_time - segment_start_time)
     else:
         label = 0
+        overlap_start_time = None
+        overlap_end_time = None
 
-    return band_powers, label
+    return band_powers, (label, overlap_start_time, overlap_end_time)
 
 # 加载并处理数据
 training_folder = r"C:\Users\lyjwa\Desktop\EEG-FV\test"
@@ -91,28 +95,28 @@ for i, _id in enumerate(ids):
                     labels.append(result[1])
 
 X = np.array(features)
-Y = np.array(labels)
+Y = np.array(labels, dtype=object)
 
 print("X shape:", X.shape)
 print("Y shape:", Y.shape)
-print("Label distribution:", np.bincount(Y))
+print("Label distribution:", np.bincount([label[0] for label in Y]))
 
 # 将数据分成训练集和测试集
-X_train, X_test, y_train, y_test = train_test_split(X, Y, test_size=0.2, random_state=42, stratify=Y)
+X_train, X_test, y_train, y_test = train_test_split(X, Y, test_size=0.2, random_state=42, stratify=[label[0] for label in Y])
 
-print("Train label distribution:", np.bincount(y_train))
-print("Test label distribution:", np.bincount(y_test))
+print("Train label distribution:", np.bincount([label[0] for label in y_train]))
+print("Test label distribution:", np.bincount([label[0] for label in y_test]))
 
 # 进行交叉验证以选择最佳的k值
 best_k = None
 best_score = 0
-k_values = range(1, 6)
+k_values = range(1, 8)
 
 for k in k_values:
     model = WBCkNN(k=k)
-    model.fit(X_train, y_train)
+    model.fit(X_train, [label[0] for label in y_train])
     y_pred = model.predict(X_test)
-    score = f1_score(y_test, y_pred)
+    score = f1_score([label[0] for label in y_test], y_pred)
     print(f'k={k}, F1 Score={score}')
     if score > best_score:
         best_score = score
@@ -122,13 +126,13 @@ print(f'Best k value: {best_k} with F1 Score: {best_score}')
 
 # 使用最佳k值训练最终模型
 model = WBCkNN(k=best_k)
-model.fit(X, Y)
+model.fit(X, [label[0] for label in Y])
 
 # 保存分类模型
 model_params = {
     'k': best_k,
     'X_train': X.tolist(),
-    'y_train': Y.tolist()
+    'y_train': [[label[0], label[1], label[2]] for label in Y]
 }
 with open('model.json', 'w', encoding='utf-8') as f:
     json.dump(model_params, f, ensure_ascii=False, indent=4)

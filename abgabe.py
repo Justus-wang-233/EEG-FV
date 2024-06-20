@@ -12,7 +12,7 @@ abgabe = {
     "team_name": "EEG-FV",
     "git_SSH": "git@github.com:Justus-wang-233/EEG-FV.git",
     "model": "model.json",
-    "python_version": 3.12
+    "python_version": 3.8
          }
 
 if time.time()-last_server_interaction < cooldown:

@@ -1,9 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-Skript testet das vortrainierte Modell
-
-@author:  Maurice Rohr, Dirk Schweickard
-"""
 
 import numpy as np
 import json
@@ -116,7 +111,7 @@ def predict_labels(channels: List[str], data: np.ndarray, fs: float, reference_s
         for band, (low, high) in bands.items():
             band_power = np.trapz(psd[(freqs >= low) & (freqs <= high)], freqs[(freqs >= low) & (freqs <= high)])
             band_powers.append(band_power)
-        return psd, band_powers
+        return band_powers
 
     # 处理每个段
     for segment_idx in range(num_segments):
@@ -134,13 +129,9 @@ def predict_labels(channels: List[str], data: np.ndarray, fs: float, reference_s
             signal_notch = mne.filter.notch_filter(x=signal, Fs=fs, freqs=np.array([50., 100.]), n_jobs=2, verbose=False)
             signal_filter = mne.filter.filter_data(data=signal_notch, sfreq=fs, l_freq=0.5, h_freq=70.0, n_jobs=2, verbose=False)
 
-            psd, band_powers = calculate_psd_and_band_power(signal_filter, fs)
-            psd_features = psd[:3]
+            band_powers = calculate_psd_and_band_power(signal_filter, fs)
 
-            overlap_start_time, overlap_end_time = 0, 0
-            combined_features = np.concatenate([psd_features, band_powers, [fs], [0, overlap_start_time, overlap_end_time]])
-
-            segment_features.append(combined_features)
+            segment_features.append(band_powers)
 
         mean_features = np.mean(segment_features, axis=0).reshape(1, -1)
 
@@ -150,18 +141,19 @@ def predict_labels(channels: List[str], data: np.ndarray, fs: float, reference_s
             seizure_confidence = 1.0
 
             # 获取k个最近邻样本的开始和结束时间及其距离
-            k_start_times = [X_train[i][-2] for i in k_indices]
-            k_end_times = [X_train[i][-1] for i in k_indices]
+            k_start_times = [y_train[i][1] for i in k_indices if y_train[i][1] is not None]
+            k_end_times = [y_train[i][2] for i in k_indices if y_train[i][2] is not None]
 
-            # 距离的倒数作为权重
-            weights = [1/d for d in distances]
-            weights = weights / np.sum(weights)  # 归一化权重
+            if k_start_times and k_end_times:
+                # 距离的倒数作为权重
+                weights = [1 / (d + 1e-5) for d in distances]  # 防止除以零
+                weights = weights / np.sum(weights)  # 归一化权重
 
-            # 计算加权平均值
-            onset = np.sum(np.array(k_start_times) * weights)
-            onset_confidence = 0.99
-            offset = np.sum(np.array(k_end_times) * weights)
-            offset_confidence = 0.99
+                # 计算加权平均值
+                onset = np.sum(np.array(k_start_times) * weights)
+                onset_confidence = 0.99
+                offset = np.sum(np.array(k_end_times) * weights)
+                offset_confidence = 0.99
 
     # --------------------------------------------------------------------------
     prediction = {"seizure_present": seizure_present, "seizure_confidence": seizure_confidence,

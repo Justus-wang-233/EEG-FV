@@ -20,3 +20,10 @@ if time.time()-last_server_interaction < cooldown:
 else:
     client.test_submission(abgabe)
     last_server_interaction = time.time()
+
+
+# if time.time()-last_server_interaction < cooldown:
+#     print("please wait")
+# else:
+#     ##client.make_submission(abgabe)
+#     last_server_interaction = time.time()

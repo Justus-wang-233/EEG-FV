@@ -27,31 +27,22 @@ def calculate_psd_and_band_power(signal, fs):
     for band, (low, high) in bands.items():
         band_power = np.trapz(psd[(freqs >= low) & (freqs <= high)], freqs[(freqs >= low) & (freqs <= high)])
         band_powers.append(band_power)
-    return psd, band_powers
+    return band_powers
 
 # 定义处理单个段的函数
 def process_segment(segment, fs, segment_start_time, segment_end_time, seizure_present, seizure_start_time, seizure_end_time):
     if len(segment) < fs:  # 忽略长度不足的段
         return None, None
 
-    psd, band_powers = calculate_psd_and_band_power(segment, fs)
-    psd_features = psd[:3]  # 示例：使用前3个PSD值
-
-    # 初始化特征
-    overlap_start_time, overlap_end_time = 0, 0
+    band_powers = calculate_psd_and_band_power(segment, fs)
 
     # 判断该段内是否有癫痫发作
     if seizure_present == 1 and seizure_start_time < segment_end_time and seizure_end_time > segment_start_time:
-        # 计算发作开始和结束时间在该段内的相对位置
-        overlap_start_time = max(0, seizure_start_time - segment_start_time)
-        overlap_end_time = min(segment_duration, seizure_end_time - segment_start_time)
-        combined_features = np.concatenate([psd_features, band_powers, [fs], [1, overlap_start_time, overlap_end_time]])
         label = 1
     else:
-        combined_features = np.concatenate([psd_features, band_powers, [fs], [0, 0, 0]])
         label = 0
 
-    return combined_features, label
+    return band_powers, label
 
 # 加载并处理数据
 training_folder = r"C:\Users\lyjwa\Desktop\EEG-FV\test"
@@ -61,7 +52,7 @@ features = []
 labels = []
 
 # 每个段的持续时间（以秒为单位）
-segment_duration = 50
+segment_duration = 25
 
 for i, _id in enumerate(ids):
     _fs = sampling_frequencies[i]
@@ -115,7 +106,7 @@ print("Test label distribution:", np.bincount(y_test))
 # 进行交叉验证以选择最佳的k值
 best_k = None
 best_score = 0
-k_values = range(1, 8)
+k_values = range(1, 6)
 
 for k in k_values:
     model = WBCkNN(k=k)

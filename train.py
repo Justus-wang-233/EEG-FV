@@ -88,7 +88,9 @@ def process_segment(segment, fs, segment_start_time, segment_end_time, seizure_p
     return band_powers, (label, overlap_start_time, overlap_end_time)
 
 # 加载并处理数据
-training_folder = r"C:\Users\lyjwa\Desktop\EEG-FV\test"
+# training_folder = r"C:\Users\lyjwa\Desktop\EEG-FV\test"
+training_folder  = "../shared_data/training_mini"
+
 ids, channels, data, sampling_frequencies, reference_systems, eeg_labels = load_references(training_folder)
 
 features = []

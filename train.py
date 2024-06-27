@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 import numpy as np
 import os
 from wettbewerb import load_references, get_3montages
@@ -8,6 +6,7 @@ from scipy import signal as sig
 from concurrent.futures import ThreadPoolExecutor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import f1_score
+from sklearn.preprocessing import StandardScaler
 import json
 from collections import Counter
 
@@ -52,9 +51,8 @@ class WBCkNN:
 
 # 定义计算功率谱密度（PSD）和频带能量的函数
 def calculate_psd_and_band_power(signal, fs):
-    nperseg = min(len(signal), 256)  # 调整nperseg以适应窗口大小
+    nperseg = min(len(signal), 256)
     freqs, psd = sig.welch(signal, fs, nperseg=nperseg)
-    # 定义频带
     bands = {
         'delta': (0.5, 4),
         'theta': (4, 8),
@@ -62,18 +60,24 @@ def calculate_psd_and_band_power(signal, fs):
         'beta': (13, 30),
         'gamma': (30, 50)
     }
-    band_powers = []
+    band_power = {}
     for band, (low, high) in bands.items():
-        band_power = np.trapz(psd[(freqs >= low) & (freqs <= high)], freqs[(freqs >= low) & (freqs <= high)])
-        band_powers.append(band_power)
-    return band_powers
+        band_idx = np.logical_and(freqs >= low, freqs <= high)
+        band_power[band] = np.sum(psd[band_idx])
+    return psd, band_power
 
 # 定义处理单个段的函数
 def process_segment(segment, fs, segment_start_time, segment_end_time, seizure_present, seizure_start_time, seizure_end_time):
     if len(segment) < fs:  # 忽略长度不足的段
         return None, None
 
-    band_powers = calculate_psd_and_band_power(segment, fs)
+    psd, band_powers = calculate_psd_and_band_power(segment, fs)
+
+    # 选择前3个PSD值
+    top_3_psd = psd[:3]
+
+    # 合并Bandpower和前3个PSD特征
+    features = list(band_powers.values()) + list(top_3_psd)
 
     # 判断该段内是否有癫痫发作
     if seizure_present == 1 and seizure_start_time < segment_end_time and seizure_end_time > segment_start_time:
@@ -85,11 +89,11 @@ def process_segment(segment, fs, segment_start_time, segment_end_time, seizure_p
         overlap_start_time = None
         overlap_end_time = None
 
-    return band_powers, (label, overlap_start_time, overlap_end_time)
+    return features, (label, overlap_start_time, overlap_end_time)
 
 # 加载并处理数据
-# training_folder = r"C:\Users\lyjwa\Desktop\EEG-FV\test"
-training_folder  = "../shared_data/training_mini"
+training_folder = r"C:\Users\lyjwa\Desktop\EEG-FV\test"
+# training_folder  = "../shared_data/training_mini"
 
 ids, channels, data, sampling_frequencies, reference_systems, eeg_labels = load_references(training_folder)
 
@@ -97,7 +101,7 @@ features = []
 labels = []
 
 # 每个段的持续时间（以秒为单位）
-segment_duration = 25
+segment_duration = 50
 
 for i, _id in enumerate(ids):
     _fs = sampling_frequencies[i]
@@ -142,8 +146,12 @@ print("X shape:", X.shape)
 print("Y shape:", Y.shape)
 print("Label distribution:", np.bincount([label[0] for label in Y]))
 
+# 特征缩放
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
 # 将数据分成训练集和测试集
-X_train, X_test, y_train, y_test = train_test_split(X, Y, test_size=0.2, random_state=42, stratify=[label[0] for label in Y])
+X_train, X_test, y_train, y_test = train_test_split(X_scaled, Y, test_size=0.2, random_state=42, stratify=[label[0] for label in Y])
 
 print("Train label distribution:", np.bincount([label[0] for label in y_train]))
 print("Test label distribution:", np.bincount([label[0] for label in y_test]))
@@ -167,13 +175,15 @@ print(f'Best k value: {best_k} with F1 Score: {best_score}')
 
 # 使用最佳k值训练最终模型
 model = WBCkNN(k=best_k)
-model.fit(X, [label[0] for label in Y])
+model.fit(X_scaled, [label[0] for label in Y])
 
 # 保存分类模型
 model_params = {
     'k': best_k,
-    'X_train': X.tolist(),
-    'y_train': [[label[0], label[1], label[2]] for label in Y]
+    'X_train': X_scaled.tolist(),
+    'y_train': [[label[0], label[1], label[2]] for label in Y],
+    'scaler_mean': scaler.mean_.tolist(),
+    'scaler_scale': scaler.scale_.tolist()
 }
 with open('model.json', 'w', encoding='utf-8') as f:
     json.dump(model_params, f, ensure_ascii=False, indent=4)

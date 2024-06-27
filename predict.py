@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-
 import numpy as np
 import json
 from typing import List, Dict, Any
@@ -7,6 +6,7 @@ from wettbewerb import get_3montages
 import mne
 from scipy import signal as sig
 from collections import Counter
+import math
 
 class WBCkNN:
     def __init__(self, k):
@@ -27,23 +27,27 @@ class WBCkNN:
 
         # 找到距离最近的k个训练样本的索引
         k_indices = np.argsort(distances)[:self.k]
-        # 获取训练样本的类别
         k_nearest_labels = [self.y_train[i] for i in k_indices]
 
+        # 计算贝叶斯后验概率
+        class_probs = self._calculate_class_probabilities(k_nearest_labels)
 
-        # 使用加权的方法计算类别概率
-        class_probs = self._calculate_class_probabilities_with_weights(k_nearest_labels, [distances[i] for i in k_indices])
+        # 返回具有最高概率的类别和最近邻样本的索引及距离
+        return max(class_probs, key=class_probs.get), k_indices, [distances[i] for i in k_indices]
 
-        # 返回具有最高概率的类别，置信度，最邻近样本的索引及距离
-        predicted_class = max(class_probs, key=class_probs.get)
-        confidence = class_probs[predicted_class]
-
-        # 返回具有最高概率的类别,置信度和最近邻样本的索引及距离
-        return predicted_class, confidence, k_indices, [distances[i] for i in k_indices]
     def _bray_curtis_distance(self, x1, x2):
         # 计算两个样本之间的Bray-Curtis距离
         return np.sum(np.abs(x1 - x2)) / np.sum(np.abs(x1 + x2))
 
+    def _calculate_class_probabilities(self, k_nearest_labels):
+        # 计算k个最近邻样本中每个类别的频率
+        class_counts = Counter(tuple(label) for label in k_nearest_labels)  # 转换为元组
+        total_count = sum(class_counts.values())
+        # 计算每个类别的概率（频率）
+        class_probs = {cls: count / total_count for cls, count in class_counts.items()}
+        return class_probs
+    
+    # Guan Changes Function
     def _calculate_class_probabilities_with_weights(self, k_nearest_labels, distances):
         # 使用距离的倒数作为权重并增加一个小的常数以防止除以零
         weights = [1 / (d + 1e-5) for d in distances]
@@ -56,8 +60,6 @@ class WBCkNN:
                 [weights[i] for i, label in enumerate(k_nearest_labels) if label == cls]) / total_weight
 
         return class_probs
-
-
 
     def _calculate_seizure_confidence(self, distances):
         # 通过距离的倒数来计算癫痫发作的置信度
@@ -79,7 +81,6 @@ class WBCkNN:
         # 当所有样本距离都较小时，置信度应当较高，当局差异较大时，置信度应当较低
         confidence = avg_inverse_distance / (np.std(weights) + 1e-5)
         confidence = min(max(confidence, 0.0), 1.0) # 将置信度限制在【0， 1】范围内
-
         return weighted_time, confidence
         # 固置信度
 
@@ -90,29 +91,27 @@ def predict_labels(channels: List[str], data: np.ndarray, fs: float, reference_s
     Parameters
     ----------
     channels : List[str]
-        Namen der übergebenen Kanäle
+        提供的通道名称
     data : ndarray
-        EEG-Signale der angegebenen Kanäle
+        给定通道的EEG信号
     fs : float
-        Sampling-Frequenz der Signale.
+        信号的采样频率
     reference_system :  str
-        Welches Referenzsystem wurde benutzt, "Bezugselektrode", nicht garantiert korrekt!
+        使用的参考系统
     model_name : str
-        Name eures Models, das ihr beispielsweise bei Abgabe genannt habt.
-        Kann verwendet werden um korrektes Model aus Ordner zu laden
+        模型的名称，用于加载
     Returns
     -------
     prediction : Dict[str,Any]
-        enthält Vorhersage, ob Anfall vorhanden und wenn ja wo (Onset+Offset)
+        包含是否发作及发作时间（开始+结束）的预测结果
     '''
+
+    print(f"Loading model from {model_name}")
 
     # 初始化返回结果
     seizure_present = False
     seizure_confidence = 0.0
-    onset = 0.0
-    onset_confidence = 0.0
-    offset = 0.0
-    offset_confidence = 0.0
+    segment_predictions = []
 
     # 读取训练好的模型参数
     with open(model_name, 'r') as f:
@@ -131,7 +130,9 @@ def predict_labels(channels: List[str], data: np.ndarray, fs: float, reference_s
 
     # 设置段持续时间（秒）
     segment_duration = 25
-    num_segments = int(len(data[0]) / (fs * segment_duration))
+    num_segments = math.ceil(len(data[0]) / (fs * segment_duration))
+
+    print(f"Number of segments: {num_segments}")
 
     def calculate_psd_and_band_power(signal, fs):
         nperseg = min(len(signal), 256)
@@ -149,12 +150,24 @@ def predict_labels(channels: List[str], data: np.ndarray, fs: float, reference_s
             band_powers.append(band_power)
         return band_powers
 
+    def pad_segment(segment, target_length):
+        pad_length = target_length - len(segment)
+        if pad_length > 0:
+            segment = np.concatenate([segment, segment[-pad_length:]])
+        return segment
+
     # 处理每个段
     for segment_idx in range(num_segments):
         start_idx = segment_idx * fs * segment_duration
         end_idx = start_idx + fs * segment_duration
 
-        segment_data = data[:, start_idx:end_idx]
+        # 确保最后一个段不会超出信号的总长度
+        if end_idx > len(data[0]):
+            segment_data = data[:, start_idx:]
+            segment_data = pad_segment(segment_data, fs * segment_duration)
+        else:
+            segment_data = data[:, start_idx:end_idx]
+
         segment_start_time = segment_idx * segment_duration
         segment_end_time = segment_start_time + segment_duration
 
@@ -162,6 +175,8 @@ def predict_labels(channels: List[str], data: np.ndarray, fs: float, reference_s
 
         for j, signal_name in enumerate(_montage):
             signal = _montage_data[j][start_idx:end_idx]
+            if len(signal) < fs * segment_duration:
+                signal = pad_segment(signal, fs * segment_duration)
             signal_notch = mne.filter.notch_filter(x=signal, Fs=fs, freqs=np.array([50., 100.]), n_jobs=2, verbose=False)
             signal_filter = mne.filter.filter_data(data=signal_notch, sfreq=fs, l_freq=0.5, h_freq=70.0, n_jobs=2, verbose=False)
 
@@ -172,28 +187,65 @@ def predict_labels(channels: List[str], data: np.ndarray, fs: float, reference_s
         mean_features = np.mean(segment_features, axis=0).reshape(1, -1)
 
         prediction, k_indices, distances = model._predict(mean_features[0])
-        if prediction == 1:
-            seizure_present = True
-            seizure_confidence = 1.0
+        print(f"Segment {segment_idx} prediction: {prediction}")  # 调试信息
 
-            # 获取k个最近邻样本的开始和结束时间及其距离
-            k_start_times = [y_train[i][1] for i in k_indices if y_train[i][1] is not None]
-            k_end_times = [y_train[i][2] for i in k_indices if y_train[i][2] is not None]
+        # 存储每次的预测结果，仅存储预测类别
+        segment_predictions.append({
+            "prediction": prediction[0],  # 只存储预测的类别（0或1）
+            "start_time": segment_start_time,
+            "end_time": segment_end_time
+        })
 
-            if k_start_times and k_end_times:
-                # 距离的倒数作为权重
-                weights = [1 / (d + 1e-5) for d in distances]  # 防止除以零
-                weights = weights / np.sum(weights)  # 归一化权重
+    # 检查是否有任何一段预测为1
+    seizure_present = any([seg["prediction"] == 1 for seg in segment_predictions])
+    print(f"Segment predictions: {segment_predictions}")
 
-                # 计算加权平均值
-                onset = np.sum(np.array(k_start_times) * weights)
-                onset_confidence = 0.99
-                offset = np.sum(np.array(k_end_times) * weights)
-                offset_confidence = 0.99
+    # 如果有癫痫发作的段，合并时间段
+    if seizure_present:
+        seizure_confidence = 1.0
+        onset_times = [seg["start_time"] for seg in segment_predictions if seg["prediction"] == 1]
+        offset_times = [seg["end_time"] for seg in segment_predictions if seg["prediction"] == 1]
+
+        # 合并相邻的时间段
+        merged_onset_times = []
+        merged_offset_times = []
+        current_onset = onset_times[0]
+        current_offset = offset_times[0]
+        for i in range(1, len(onset_times)):
+            if onset_times[i] <= current_offset:  # 如果当前段的发作时间与上一个段重叠或相接
+                current_offset = max(current_offset, offset_times[i])
+            else:
+                merged_onset_times.append(current_onset)
+                merged_offset_times.append(current_offset)
+                current_onset = onset_times[i]
+                current_offset = offset_times[i]
+        merged_onset_times.append(current_onset)
+        merged_offset_times.append(current_offset)
+
+        onset = merged_onset_times[0]
+        onset_confidence = 0.99
+        offset = merged_offset_times[0]
+        offset_confidence = 0.99
+        if len(merged_onset_times) > 1:
+            for i in range(1, len(merged_onset_times)):
+                onset = min(onset, merged_onset_times[i])
+                offset = max(offset, merged_offset_times[i])
+    else:
+        onset = None
+        onset_confidence = None
+        offset = None
+        offset_confidence = None
 
     # --------------------------------------------------------------------------
-    prediction = {"seizure_present": seizure_present, "seizure_confidence": seizure_confidence,
-                  "onset": onset, "onset_confidence": onset_confidence, "offset": offset,
-                  "offset_confidence": offset_confidence}
+    prediction = {
+        "seizure_present": seizure_present,
+        "seizure_confidence": seizure_confidence,
+        "onset": onset,
+        "onset_confidence": onset_confidence,
+        "offset": offset,
+        "offset_confidence": offset_confidence
+    }
+
+    print(f"Final prediction: {prediction}")  # 调试信息
 
     return prediction

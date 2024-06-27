@@ -92,9 +92,9 @@ def process_segment(segment, fs, segment_start_time, segment_end_time, seizure_p
     return features, (label, overlap_start_time, overlap_end_time)
 
 # 加载并处理数据
-training_folder = r"C:\Users\lyjwa\Desktop\EEG-FV\test"  # Wang
+# training_folder = r"C:\Users\lyjwa\Desktop\EEG-FV\test"  # Wang
 # training_folder = r"/Users/guanhanchen/Documents/EEG-FV/mini_mat_wki"  # Guan
-# training_folder  = "../shared_data/training_mini"  # Jupyter
+training_folder  = "../shared_data/training_mini"  # Jupyter
 
 ids, channels, data, sampling_frequencies, reference_systems, eeg_labels = load_references(training_folder)
 
@@ -102,7 +102,7 @@ features = []
 labels = []
 
 # 每个段的持续时间（以秒为单位）
-segment_duration = 50
+segment_duration = 25
 
 for i, _id in enumerate(ids):
     _fs = sampling_frequencies[i]

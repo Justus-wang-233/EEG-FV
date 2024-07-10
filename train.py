@@ -6,7 +6,6 @@ from scipy import signal as sig
 from concurrent.futures import ThreadPoolExecutor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import f1_score
-from sklearn.preprocessing import StandardScaler
 import json
 from collections import Counter
 
@@ -49,10 +48,9 @@ class WBCkNN:
         class_probs = {cls: count / total_count for cls, count in class_counts.items()}
         return class_probs
 
-# 定义计算功率谱密度（PSD）和频带能量的函数
-def calculate_psd_and_band_power(signal, fs):
-    nperseg = min(len(signal), 256)
-    freqs, psd = sig.welch(signal, fs, nperseg=nperseg)
+# 定义计算频带能量的函数
+def calculate_band_power(signal, fs):
+    freqs, psd = sig.welch(signal, fs, nperseg=256)
     bands = {
         'delta': (0.5, 4),
         'theta': (4, 8),
@@ -60,24 +58,27 @@ def calculate_psd_and_band_power(signal, fs):
         'beta': (13, 30),
         'gamma': (30, 50)
     }
-    band_power = {}
+    band_power = []
     for band, (low, high) in bands.items():
         band_idx = np.logical_and(freqs >= low, freqs <= high)
-        band_power[band] = np.sum(psd[band_idx])
-    return psd, band_power
+        band_power.append(np.sum(psd[band_idx]))
+    return band_power
 
 # 定义处理单个段的函数
 def process_segment(segment, fs, segment_start_time, segment_end_time, seizure_present, seizure_start_time, seizure_end_time):
-    if len(segment) < fs:  # 忽略长度不足的段
+    if segment.shape[1] < fs:  # 忽略长度不足的段
+        print("Segment too short, ignoring")
         return None, None
 
-    psd, band_powers = calculate_psd_and_band_power(segment, fs)
+    features = []
+    for channel in segment:
+        band_power = calculate_band_power(channel, fs)
+        features.extend(band_power)
 
-    # 选择前3个PSD值
-    top_3_psd = psd[:3]
-
-    # 合并Bandpower和前3个PSD特征
-    features = list(band_powers.values()) + list(top_3_psd)
+    # 确保每段有15个特征
+    if len(features) != 15:
+        print(f"Feature length mismatch: {len(features)} != 15")
+        return None, None
 
     # 判断该段内是否有癫痫发作
     if seizure_present == 1 and seizure_start_time < segment_end_time and seizure_end_time > segment_start_time:
@@ -91,8 +92,28 @@ def process_segment(segment, fs, segment_start_time, segment_end_time, seizure_p
 
     return features, (label, overlap_start_time, overlap_end_time)
 
+# 放大信号
+def amplify_signal(signal, factor=1e6):
+    return signal * factor
+
+# 应用高通滤波器
+def apply_highpass_filter(signal, fs, cutoff=1.0):
+    return mne.filter.filter_data(data=signal, sfreq=fs, l_freq=cutoff, h_freq=None, n_jobs=2, verbose=False)
+
+# 应用Notch滤波器
+def apply_notch_filter(signal, fs):
+    return np.array(
+        [mne.filter.notch_filter(channel_data, Fs=fs, freqs=np.array([50., 100.]), n_jobs=2, verbose=False) for channel_data in signal]
+    )
+
+# 应用带通滤波器
+def apply_bandpass_filter(signal, fs):
+    return np.array(
+        [mne.filter.filter_data(channel_data, sfreq=fs, l_freq=0.5, h_freq=50.0, n_jobs=2, verbose=False) for channel_data in signal]
+    )
+
 # 加载并处理数据
-# training_folder = r"C:\Users\lyjwa\Desktop\EEG-FV\test"  # Wang
+# training_folder  = r"C:\Users\lyjwa\Desktop\EEG-FV\test"  # Wang
 # training_folder = r"/Users/guanhanchen/Documents/EEG-FV/mini_mat_wki"  # Guan
 training_folder  = "../shared_data/training_mini"  # Jupyter
 
@@ -113,32 +134,41 @@ for i, _id in enumerate(ids):
 
     _montage, _montage_data, _is_missing = get_3montages(channels[i], _eeg_signals)
 
-    for j, signal_name in enumerate(_montage):
-        signal = _montage_data[j]
-        # 应用Notch滤波器以衰减电源频率干扰
-        signal_notch = mne.filter.notch_filter(x=signal, Fs=_fs, freqs=np.array([50., 100.]), n_jobs=2, verbose=False)
-        # 应用带通滤波器以过滤掉噪声
-        signal_filter = mne.filter.filter_data(data=signal_notch, sfreq=_fs, l_freq=0.5, h_freq=70.0, n_jobs=2, verbose=False)
+    # 合并三个通道的数据
+    signal_data = np.array(_montage_data)
+    # 放大信号
+    signal_amplified = amplify_signal(signal_data)
 
-        # 计算总段数
-        num_segments = int(len(signal_filter) / (_fs * segment_duration))
+    # 应用高通滤波器
+    signal_highpass = apply_highpass_filter(signal_amplified, _fs)
 
-        # 使用ThreadPoolExecutor并行处理段
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            futures = []
-            for segment_idx in range(num_segments):
-                start_idx = segment_idx * _fs * segment_duration
-                end_idx = start_idx + _fs * segment_duration
-                segment = signal_filter[start_idx:end_idx]
-                segment_start_time = segment_idx * segment_duration
-                segment_end_time = segment_start_time + segment_duration
-                futures.append(executor.submit(process_segment, segment, _fs, segment_start_time, segment_end_time, *_eeg_label))
+    # 应用Notch滤波器以衰减电源频率干扰
+    signal_notch = apply_notch_filter(signal_highpass, _fs)
 
-            for future in futures:
-                result = future.result()
-                if result[0] is not None:
-                    features.append(result[0])
-                    labels.append(result[1])
+    # 应用带通滤波器以过滤掉噪声
+    signal_filter = apply_bandpass_filter(signal_notch, _fs)
+
+    # 计算总段数
+    num_segments = int(signal_filter.shape[1] / (_fs * segment_duration))
+
+    print(f"Processing {num_segments} segments for file {_id}...")
+
+    # 使用ThreadPoolExecutor并行处理段
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = []
+        for segment_idx in range(num_segments):
+            start_idx = segment_idx * _fs * segment_duration
+            end_idx = start_idx + _fs * segment_duration
+            segment = signal_filter[:, start_idx:end_idx]
+            segment_start_time = segment_idx * segment_duration
+            segment_end_time = segment_start_time + segment_duration
+            futures.append(executor.submit(process_segment, segment, _fs, segment_start_time, segment_end_time, *_eeg_label))
+
+        for future in futures:
+            result = future.result()
+            if result[0] is not None:
+                features.append(result[0])
+                labels.append(result[1])
 
 X = np.array(features)
 Y = np.array(labels, dtype=object)
@@ -147,12 +177,8 @@ print("X shape:", X.shape)
 print("Y shape:", Y.shape)
 print("Label distribution:", np.bincount([label[0] for label in Y]))
 
-# 特征缩放
-scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X)
-
 # 将数据分成训练集和测试集
-X_train, X_test, y_train, y_test = train_test_split(X_scaled, Y, test_size=0.2, random_state=42, stratify=[label[0] for label in Y])
+X_train, X_test, y_train, y_test = train_test_split(X, Y, test_size=0.2, random_state=42, stratify=[label[0] for label in Y])
 
 print("Train label distribution:", np.bincount([label[0] for label in y_train]))
 print("Test label distribution:", np.bincount([label[0] for label in y_test]))
@@ -176,15 +202,13 @@ print(f'Best k value: {best_k} with F1 Score: {best_score}')
 
 # 使用最佳k值训练最终模型
 model = WBCkNN(k=best_k)
-model.fit(X_scaled, [label[0] for label in Y])
+model.fit(X, [label[0] for label in Y])
 
 # 保存分类模型
 model_params = {
     'k': best_k,
-    'X_train': X_scaled.tolist(),
-    'y_train': [[label[0], label[1], label[2]] for label in Y],
-    'scaler_mean': scaler.mean_.tolist(),
-    'scaler_scale': scaler.scale_.tolist()
+    'X_train': X.tolist(),
+    'y_train': [[label[0], label[1], label[2]] for label in Y]
 }
 with open('model.json', 'w', encoding='utf-8') as f:
     json.dump(model_params, f, ensure_ascii=False, indent=4)

@@ -123,7 +123,7 @@ features = []
 labels = []
 
 # 每个段的持续时间（以秒为单位）
-segment_duration = 25
+segment_duration = 5
 
 for i, _id in enumerate(ids):
     _fs = sampling_frequencies[i]

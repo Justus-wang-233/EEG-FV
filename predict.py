@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+# predict.py
 import numpy as np
 import json
 import math
@@ -8,14 +8,16 @@ from wettbewerb import get_3montages
 import mne
 from scipy import signal as sig
 from collections import Counter
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import GradientBoostingClassifier
 
 class WBCkNN:
     def __init__(self, k):
-        self.k = k  # 设置k值，表示最近邻的数量
+        self.k = k
 
     def fit(self, X_train, y_train):
-        self.X_train = X_train  # 保存训练数据
-        self.y_train = y_train  # 保存训练标签
+        self.X_train = X_train
+        self.y_train = y_train
 
     def predict(self, X_test):
         predictions = [self._predict(x) for x in X_test]
@@ -74,45 +76,49 @@ class WBCkNN:
         weighted_time = np.sum(np.array(times) * weights)
         avg_inverse_distance = np.mean(weights)
         confidence = avg_inverse_distance / (np.std(weights) + 1e-5)
-        # 使用 Sigmoid 函数将置信度规范化到 0 到 1 之间
         confidence = 1 / (1 + np.exp(-confidence))
         return weighted_time, confidence
 
 def amplify_signal(signal, factor=1e6):
     return signal * factor
 
-def predict_labels(channels: List[str], data: np.ndarray, fs: float, reference_system: str,
-                   model_name: str = 'model.json') -> Dict[str, Any]:
-    print(f"Loading model from {model_name}")
-
-    seizure_present = False
-    seizure_confidence = 0.0
-    segment_predictions = []
-
+def predict_labels(channels: List[str], data: np.ndarray, fs: float, reference_system: str, model_name: str = 'model.json') -> Dict[str, Any]:
+    print(f"Entering predict_labels with model: {model_name}")
     try:
-        with open(model_name, 'r') as f:
-            model_params = json.load(f)
-            k = model_params['k']
-            X_train = np.array(model_params['X_train'])
-            y_train = np.array(model_params['y_train'])
+        # Derive model file names from the model_name parameter
+        gbdt_model_name = f"{model_name.replace('.json', '')}_gbdt.json"
+        wbcknn_model_name = f"{model_name.replace('.json', '')}_wbcknn.json"
 
-        model = WBCkNN(k=k)
-        model.fit(X_train, y_train)
+        print(f"Loading GBDT model from {gbdt_model_name}...")
+        with open(gbdt_model_name, 'r') as f:
+            gbdt_model_params = json.load(f)
+            gbdt_scaler = StandardScaler()
+            gbdt_scaler.mean_ = np.array(gbdt_model_params['scaler_mean_'])
+            gbdt_scaler.scale_ = np.array(gbdt_model_params['scaler_scale_'])
+            gbdt_model = GradientBoostingClassifier(**gbdt_model_params['gb_model_params'])
+            X_train = np.array(gbdt_model_params['X_train'])
+            y_train = np.array([label[0] for label in gbdt_model_params['y_train']])
+            gbdt_model.fit(gbdt_scaler.transform(X_train), y_train)
 
+        print(f"Loading WBCkNN model from {wbcknn_model_name}...")
+        with open(wbcknn_model_name, 'r') as f:
+            wbcknn_model_params = json.load(f)
+            k = wbcknn_model_params['k']
+            X_train_wbcknn = np.array(wbcknn_model_params['X_train'])
+            y_train_wbcknn = np.array(wbcknn_model_params['y_train'])
+
+        wbcknn_model = WBCkNN(k=k)
+        wbcknn_model.fit(X_train_wbcknn, y_train_wbcknn)
+
+        print("Processing montage data...")
         _montage, _montage_data, _is_missing = get_3montages(channels, data)
         if _montage is None or len(_montage_data) == 0:
             print("Error: Montage data is empty")
-            return {
-                "seizure_present": False,
-                "seizure_confidence": 0.0,
-                "onset": None,
-                "onset_confidence": None,
-                "offset": None,
-                "offset_confidence": None
-            }
+            return {}
 
         segment_duration = 25
         num_segments = math.ceil(len(data[0]) / (fs * segment_duration))
+        print(f"Number of segments: {num_segments}")
 
         def calculate_band_power(signal, fs):
             nperseg = min(len(signal), 256)
@@ -138,6 +144,14 @@ def predict_labels(channels: List[str], data: np.ndarray, fs: float, reference_s
                 segment = np.pad(segment, ((0, 0), (0, pad_length)), mode='edge')
             return segment
 
+        seizure_present = False
+        onset = None
+        offset = None
+        onset_confidence = 0.0
+        offset_confidence = 0.0
+        seizure_confidence = 0.0
+        combined_onset_confidences = []
+        combined_offset_confidences = []
         for segment_idx in range(num_segments):
             start_idx = int(segment_idx * fs * segment_duration)
             end_idx = int(start_idx + fs * segment_duration)
@@ -169,60 +183,58 @@ def predict_labels(channels: List[str], data: np.ndarray, fs: float, reference_s
                 segment_features.extend(band_powers)
 
             segment_features = np.array(segment_features).flatten()
+            segment_features_scaled = gbdt_scaler.transform([segment_features])
 
-            prediction, seizure_confidence, onset, onset_confidence, offset, offset_confidence = model._predict(segment_features)
-            print(f"Segment {segment_idx} prediction: {prediction}")
+            gbdt_prediction = gbdt_model.predict(segment_features_scaled)[0]
+            gbdt_confidence = gbdt_model.predict_proba(segment_features_scaled)[0][1]  # Assuming the positive class is at index 1
 
-            segment_predictions.append({
-                "prediction": prediction,
-                "start_time": segment_start_time,
-                "end_time": segment_end_time,
-                "seizure_confidence": seizure_confidence,
-                "onset": onset,
-                "onset_confidence": onset_confidence,
-                "offset": offset,
-                "offset_confidence": offset_confidence
-            })
+            print(f"Segment {segment_idx} GBDT prediction: {gbdt_prediction}, confidence: {gbdt_confidence}")
 
-        seizure_present = any([seg["prediction"] == 1 for seg in segment_predictions])
-        print(f"Segment predictions: {segment_predictions}")
+            if gbdt_prediction == 1:
+                prediction, segment_seizure_confidence, segment_onset, segment_onset_confidence, segment_offset, segment_offset_confidence = wbcknn_model._predict(segment_features)
 
-        if seizure_present:
-            print("Seizure detected. Processing onset and offset times.")
-            first_onset_time = None
-            last_offset_time = None
-            onset_confidences = []
-            offset_confidences = []
-            for seg in segment_predictions:
-                if seg["prediction"] == 1:
-                    if first_onset_time is None:
-                        first_onset_time = seg["start_time"] + seg["onset"]
-                        onset_confidences.append(seg["onset_confidence"])
-                    last_offset_time = seg["start_time"] + seg["offset"]
-                    offset_confidences.append(seg["offset_confidence"])
+                if prediction != gbdt_prediction:
+                    print(f"Conflict detected between GBDT and WBCkNN predictions in segment {segment_idx}. Forcing onset and offset to 12.5.")
+                    segment_onset = 12.5
+                    segment_offset = 12.5
+                    segment_onset_confidence = 0.0
+                    segment_offset_confidence = 0.0
 
-            onset_confidence = np.mean(onset_confidences)
-            offset_confidence = np.mean(offset_confidences)
+                seizure_present = True
+                seizure_confidence += segment_seizure_confidence
 
-            prediction = {
-                "seizure_present": seizure_present,
-                "seizure_confidence": 1.0,  # 置信度！！！，可以调整
-                "onset": first_onset_time,
-                "onset_confidence": onset_confidence,
-                "offset": last_offset_time,
-                "offset_confidence": offset_confidence
-            }
-        else:
-            prediction = {
-                "seizure_present": False,
-                "seizure_confidence": 0.0,
-                "onset": None,
-                "onset_confidence": None,
-                "offset": None,
-                "offset_confidence": None
-            }
+                if segment_onset is not None:
+                    if onset is None:
+                        onset = segment_start_time + segment_onset
+                        onset_confidence = segment_onset_confidence
+                    combined_onset_confidences.append(segment_onset_confidence)
+                if segment_offset is not None:
+                    offset = segment_start_time + segment_offset
+                    combined_offset_confidences.append(segment_offset_confidence)
+
+                print(f"Segment {segment_idx} WBCkNN prediction: {prediction}")
+
+        if combined_onset_confidences:
+            onset_confidence = np.mean(combined_onset_confidences)
+        if combined_offset_confidences:
+            offset_confidence = np.mean(combined_offset_confidences)
+
+        print(f"Seizure present: {seizure_present}")
+        print(f"Seizure confidence: {seizure_confidence}")
+        print(f"Onset: {onset}, Onset confidence: {onset_confidence}")
+        print(f"Offset: {offset}, Offset confidence: {offset_confidence}")
+
+        prediction = {
+            "seizure_present": seizure_present,
+            "seizure_confidence": seizure_confidence,
+            "onset": onset,
+            "onset_confidence": onset_confidence,
+            "offset": offset,
+            "offset_confidence": offset_confidence
+        }
 
         print(f"Final prediction: {prediction}")
+
         return prediction
 
     except Exception as e:
@@ -232,7 +244,7 @@ def predict_labels(channels: List[str], data: np.ndarray, fs: float, reference_s
             "seizure_present": False,
             "seizure_confidence": 0.0,
             "onset": None,
-            "onset_confidence": None,
+            "onset_confidence": 0.0,
             "offset": None,
-            "offset_confidence": None
+            "offset_confidence": 0.0
         }

@@ -113,9 +113,9 @@ def apply_bandpass_filter(signal, fs):
     )
 
 # 加载并处理数据
-training_folder  = r"C:\Users\lyjwa\Desktop\EEG-FV\test"  # Wang
+# training_folder  = r"C:\Users\lyjwa\Desktop\EEG-FV\test"  # Wang
 # training_folder = r"/Users/guanhanchen/Documents/EEG-FV/mini_mat_wki"  # Guan
-# training_folder  = "../shared_data/training_mini"  # Jupyter
+training_folder  = "../shared_data/training_mini"  # Jupyter
 
 ids, channels, data, sampling_frequencies, reference_systems, eeg_labels = load_references(training_folder)
 
@@ -212,5 +212,5 @@ model_params = {
     'X_train': X.tolist(),
     'y_train': [[label[0], label[1], label[2]] for label in Y]
 }
-with open('wbcknn_model.json', 'w', encoding='utf-8') as f:
+with open('model_wbcknn.json', 'w', encoding='utf-8') as f:
     json.dump(model_params, f, ensure_ascii=False, indent=4)

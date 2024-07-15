@@ -5,7 +5,7 @@ Um diese Codezeile nicht zu ändern,
 
     def predict_labels(channels: List[str], data: np.ndarray, fs: float, reference_system: str, model_name: str = 'model.json') -> Dict[str, Any]:
 
-haben wir die folgenden Code verwendet, um unsere Modelle zu laden.
+haben wir die folgenden Code in "predict_labels" verwendet, um unsere Modelle zu laden.
 
     try:
         gbdt_model_name = f"{model_name.replace('.json', '')}_gbdt.json"
